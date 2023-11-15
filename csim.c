@@ -8,9 +8,11 @@
 #include <stdlib.h>
 #include <argp.h>
 
+typedef unsigned long addr_size;
+
 typedef struct {
 	bool valid;
-	long tag_val;
+	addr_size tag_val;
 }line;
 
 typedef struct {
@@ -26,6 +28,7 @@ int associativity;
 int block_num;
 char *file_name;
 result res = {0, 0, 1};
+char *last_line;
 
 
 void print_options(){
@@ -75,10 +78,28 @@ void arg_parser(int argc, char *argv[]){
     argv += optind;
 }
 
+//Return num of mask bit
+addr_size get_mask_bit(int num){
+	addr_size mask = 0xFFFFFFFFFFFFFFFF;
+	return ~(mask << block_num);
+}
+
+
+addr_size get_set_bit(addr_size addr){
+	addr >>= block_num;
+	return addr & get_mask_bit(set_index_num);
+}
+
+unsigned get_tag_bit(addr_size addr){
+	unsigned tag_idx = block_num + set_index_num;
+	addr >>= tag_idx;
+	return addr & get_mask_bit(64 - tag_idx);
+}
 
 line **init_cache(){
 	//Allocate memory for line array
-	line **cache = (line **)malloc(set_index_num * sizeof(line *));
+	printf("DEBUG - array col size : %d\n", 1<<set_index_num);	
+	line **cache = (line **)malloc((1<<set_index_num) * sizeof(line *));
 	if(cache == NULL)
 		return NULL;
 
@@ -104,14 +125,40 @@ void free_cache(line **cache){
     free(cache);
 }
 
-void cache_store(line **cache, long addr, int size){
+
+
+void cache_store(line **cache, addr_size addr, int size){
 
 
 }
 
-void cache_load(line **cache, long addr, int size){
+void cache_load(line **cache, addr_size addr, int size){
+	addr_size set_bit = get_set_bit(addr);
+	printf("\nDEBUG - set_bit : %lx\n", set_bit);
 
+	for(int i = 0; i < associativity; i++){
+		line elem = cache[set_bit][i];
 
+		//Match tag
+		if(elem.valid && (elem.tag_val == get_tag_bit(addr))){
+			res.hits++;
+			if(verbose_on)
+				printf("hit ");
+			return;
+		}
+		//Miss, but we can fill cache 
+		else if(!elem.valid){
+			cache[set_bit][i].valid = true;
+			cache[set_bit][i].tag_val = get_tag_bit(addr);
+			res.misses++;
+			if(verbose_on)
+			printf("miss ");
+			return;
+		}
+	}
+	//Have to evict 
+	
+	return;
 }
 
 
@@ -148,15 +195,23 @@ int main(int argc, char *argv[])
 
         fscanf(file, " %lx,%d", &addr, &size);
 
+		if(verbose_on)
+			printf("%c %lx %d ", type, addr, size);
+
 		if(type == 'I')
 			continue;
-		else if(type == 'S')
-			cache_store(cache, addr, size);
+//		else if(type == 'S')
+//			cache_store(cache, addr, size);
 		else if(type == 'L')
 			cache_load(cache, addr, size);
+//		else{
+//			cache_load(cache, addr, size);
+//			cache_store(cache, addr, size);
+//		}
+//
+		if(verbose_on)
+			printf("\n");
 
-
-		printf("%c %lx %d\n", type, addr, size);
     }
 
     fclose(file);  // 파일 닫기
