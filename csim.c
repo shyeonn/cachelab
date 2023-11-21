@@ -10,10 +10,6 @@
 
 typedef unsigned long addr_size;
 
-typedef struct {
-	bool valid;
-	addr_size tag_val;
-}line;
 
 typedef struct {
 	int hits;
@@ -21,19 +17,34 @@ typedef struct {
 	int evictions;
 }result;
 
+typedef struct Elem {
+    bool valid;
+    addr_size tag_val;
+    struct Elem* prev;
+    struct Elem* next;
+} Elem;
+
+typedef struct Cache {
+    int capacity;
+    int size;
+    Elem* head;
+    Elem* tail;
+} Cache;
+
+
 
 bool verbose_on = false;
 int set_index_num;
 int associativity;
 int block_num;
 char *file_name;
-result res = {0, 0, 1};
-char *last_line;
+result res = {0, 0, 0};
 
 
+/* Argument Pasrser */
 void print_options(){
 	printf(
-			"Usage: ./csim-ref [-hv] -s <num> -E <num> -b <num> -t <file>\n"
+			"Usage: ./csim [-hv] -s <num> -E <num> -b <num> -t <file>\n"
 			"Options:\n"
 			"  -h         Print this help message.\n"
 			"  -v         Optional verbose flag.\n"
@@ -42,8 +53,8 @@ void print_options(){
 			"  -b <num>   Number of block offset bits.\n"
 			"  -t <file>  Trace file.\n\n"
 			"Examples:\n"
-			"  linux>  ./csim-ref -s 4 -E 1 -b 4 -t traces/yi.trace\n"
-			"  linux>  ./csim-ref -v -s 8 -E 2 -b 4 -t traces/yi.trace\n");
+			"  linux>  ./csim -s 4 -E 1 -b 4 -t traces/yi.trace\n"
+			"  linux>  ./csim -v -s 8 -E 2 -b 4 -t traces/yi.trace\n");
 }
 
 void arg_parser(int argc, char *argv[]){
@@ -78,10 +89,10 @@ void arg_parser(int argc, char *argv[]){
     argv += optind;
 }
 
-//Return num of mask bit
+/*Bit API*/
 addr_size get_mask_bit(int num){
 	addr_size mask = 0xFFFFFFFFFFFFFFFF;
-	return ~(mask << block_num);
+	return ~(mask << num);
 }
 
 
@@ -96,76 +107,165 @@ unsigned get_tag_bit(addr_size addr){
 	return addr & get_mask_bit(64 - tag_idx);
 }
 
-line **init_cache(){
-	//Allocate memory for line array
-	printf("DEBUG - array col size : %d\n", 1<<set_index_num);	
-	line **cache = (line **)malloc((1<<set_index_num) * sizeof(line *));
-	if(cache == NULL)
-		return NULL;
 
-	for (int i = 0; i < set_index_num; i++) {
-        cache[i] = (line *)malloc(associativity * sizeof(line));
-        if (cache[i] == NULL) {
-            return NULL;
-        }
 
-		//Initial the valid bit value 
-		for(int j = 0; j < associativity; j++) {
-			cache[i][j].valid = false;
-			//cache[i][j].tag_val = 0;
-		}
-    }
-	return cache;
+// Cache line & elem API
+Elem* create_elem(addr_size tag_val) {
+    Elem* newelem = (Elem*)malloc(sizeof(Elem));
+    newelem->tag_val = tag_val;
+    newelem->prev = NULL;
+    newelem->next = NULL;
+
+    return newelem;
 }
 
-void free_cache(line **cache){
-	for (int i = 0; i < associativity; ++i) {
-        free(cache[i]);
+Cache* init_cache_line(int capacity) {
+    Cache* cache = (Cache*)malloc(sizeof(Cache));
+    cache->capacity = capacity;
+    cache->size = 0;
+    cache->head = NULL;
+    cache->tail = NULL;
+
+    return cache;
+}
+
+bool find_elem(Cache* cache, addr_size tag_val) {
+
+	//Find from the first element
+	Elem *current = cache->head;
+
+	// Search the matching elem in list
+	while (current != NULL) {
+		if (current->tag_val == tag_val) {
+			// When find the matching elem, then move to front
+			if (current != cache->head) {
+				if (current == cache->tail) {
+					cache->tail = current->prev;
+					cache->tail->next = NULL;
+				} else {
+					current->prev->next = current->next;
+					current->next->prev = current->prev;
+				}
+				current->prev = NULL;
+				current->next = cache->head;
+				cache->head->prev = current;
+				cache->head = current;
+			}
+			
+			if(verbose_on)
+				printf(" hit");
+			res.hits++;
+
+			return true;
+		}
+		current = current->next;
+	}
+
+	if(verbose_on)
+		printf(" miss");
+	res.misses++;
+
+	return false;
+}
+
+void add_elem(Cache* cache, addr_size tag_val) {
+    if (cache == NULL) exit(1);
+
+	if(find_elem(cache, tag_val))
+		return;
+
+
+    Elem* newelem = create_elem(tag_val);
+    newelem->next = cache->head;
+
+
+    if (cache->head != NULL) {
+        cache->head->prev = newelem;
+    }
+
+    cache->head = newelem;
+
+	if (cache->tail == NULL) {
+		cache->tail = newelem;
+	}
+
+    // When cache is full, evict the old cache element
+    if (cache->size == cache->capacity) {
+
+		if(verbose_on)
+			printf(" eviction");
+		res.evictions++;
+
+        Elem* temp = cache->tail;
+        cache->tail = cache->tail->prev;
+        cache->tail->next = NULL;
+        free(temp);
+
+        cache->size--;
+    }
+
+    cache->size++;
+}
+
+void printCache(Cache* cache) {
+    printf("LRU Cache: ");
+    Elem* current = cache->head;
+    while (current != NULL) {
+        printf("(%lx) ", current->tag_val);
+        current = current->next;
+    }
+    printf("\n");
+}
+
+void free_cache_line(Cache* cache) {
+
+    Elem* current = cache->head;
+    while (current != NULL) {
+        Elem* temp = current;
+        current = current->next;
+        free(temp);
     }
     free(cache);
 }
 
+/* Cache API*/
+Cache **init_cache(){
+	Cache **cache = (Cache **)malloc((1<<set_index_num) * sizeof(Cache *));
+	if(cache == NULL)
+		return NULL;
 
-
-void cache_store(line **cache, addr_size addr, int size){
-
-
+	for (int i = 0; i < (1<<set_index_num); i++) {
+        cache[i] = init_cache_line(associativity);
+    }
+	return cache;
 }
 
-void cache_load(line **cache, addr_size addr, int size){
+void free_cache(Cache **cache){
+	for (int i = 0; i < set_index_num; ++i) {
+		free_cache_line(cache[i]);
+    }
+    free(cache);
+}
+
+void cache_store(Cache **cache, addr_size addr, int size){
 	addr_size set_bit = get_set_bit(addr);
-	printf("\nDEBUG - set_bit : %lx\n", set_bit);
+	addr_size tag_bit = get_tag_bit(addr);
 
-	for(int i = 0; i < associativity; i++){
-		line elem = cache[set_bit][i];
+	add_elem(cache[set_bit], tag_bit);
+}
 
-		//Match tag
-		if(elem.valid && (elem.tag_val == get_tag_bit(addr))){
-			res.hits++;
-			if(verbose_on)
-				printf("hit ");
-			return;
-		}
-		//Miss, but we can fill cache 
-		else if(!elem.valid){
-			cache[set_bit][i].valid = true;
-			cache[set_bit][i].tag_val = get_tag_bit(addr);
-			res.misses++;
-			if(verbose_on)
-			printf("miss ");
-			return;
-		}
-	}
-	//Have to evict 
-	
-	return;
+void cache_load(Cache **cache, addr_size addr, int size){
+	addr_size set_bit = get_set_bit(addr);
+	addr_size tag_bit = get_tag_bit(addr);
+
+	add_elem(cache[set_bit], tag_bit);
 }
 
 
 
 int main(int argc, char *argv[])
 {
-	line **cache;
+	Cache **cache;
 
 	//Parsed data
 	char type;
@@ -196,19 +296,20 @@ int main(int argc, char *argv[])
         fscanf(file, " %lx,%d", &addr, &size);
 
 		if(verbose_on)
-			printf("%c %lx %d ", type, addr, size);
+			printf("%c %lx,%d", type, addr, size);
+		
 
 		if(type == 'I')
 			continue;
-//		else if(type == 'S')
-//			cache_store(cache, addr, size);
+		else if(type == 'S')
+			cache_store(cache, addr, size);
 		else if(type == 'L')
 			cache_load(cache, addr, size);
-//		else{
-//			cache_load(cache, addr, size);
-//			cache_store(cache, addr, size);
-//		}
-//
+		else{
+			cache_load(cache, addr, size);
+			cache_store(cache, addr, size);
+		}
+
 		if(verbose_on)
 			printf("\n");
 
